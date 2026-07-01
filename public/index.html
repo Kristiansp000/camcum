@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Premium Multi-View Camera Studio</title>
+    <title>Camcum Premium Multi-View Camera Studio</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -31,7 +31,7 @@
         <div class="max-w-7xl mx-auto flex justify-between items-center gap-4">
             <div class="flex items-center gap-2 min-w-0">
                 <i data-lucide="aperture" class="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0"></i>
-                <span class="text-sm md:text-base font-semibold tracking-tight truncate">CamCum</span>
+                <span class="text-sm md:text-base font-semibold tracking-tight truncate">Camcum Studio</span>
             </div>
             <div class="flex items-center gap-2 md:gap-4 shrink-0">
                 <div id="peer-id-display" class="text-[10px] md:text-xs bg-zinc-100 dark:bg-zinc-800 px-2.5 md:px-4 py-1.5 md:py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 font-mono text-zinc-600 dark:text-zinc-400 whitespace-nowrap">
@@ -140,7 +140,7 @@
 
     </main>
 
-    <!-- LAYER KHUSUS: ISOLATED FULLSCREEN (Melalui Deteksi URL Param) -->
+    <!-- LAYER KHUSUS: ISOLATED FULLSCREEN -->
     <div id="isolated-fullscreen-layer" class="hidden fixed inset-0 bg-black z-[9999] flex items-center justify-center">
         <video id="isolated-video" autoplay playsinline class="w-full h-full object-contain"></video>
         <button id="btn-close-isolated" class="absolute top-4 right-4 bg-zinc-900/80 text-white p-2.5 rounded-full border border-zinc-700 hover:bg-zinc-800 transition">
@@ -153,14 +153,14 @@
 
     <!-- Footer -->
     <footer class="p-4 text-center text-[10px] md:text-[11px] text-zinc-400 dark:text-zinc-600 border-t border-zinc-100 dark:border-zinc-900 shrink-0">
-        Minimalist Studio &copy; 2026
+        Camcum Studio &copy; 2026
     </footer>
 
     <script>
-        const APP_PREFIX = "CAMCUM_ROOM_"; // Tetap menggunakan prefix server lama Anda
+        const APP_PREFIX = "CAMCUM_ROOM_"; 
         let peer = null;
         let localStream = null;
-        let currentRole = null; // 'host' atau 'client'
+        let currentRole = null; 
         let targetRoomId = null;
         let activeCall = null; 
         let reconnectTimeout = null;
@@ -170,7 +170,6 @@
         const elHost = document.getElementById('workspace-host');
         const elClient = document.getElementById('workspace-client');
         const elPeerDisplay = document.getElementById('peer-id-display');
-        const elLog = document.getElementById('status-log');
 
         function generateShortId() {
             const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -185,7 +184,7 @@
             }
         }
 
-        // --- DEKODER PARAMETER URL (CEK RUNNING MODE ISOLATED FULLSCREEN) ---
+        // --- DEKODER PARAMETER URL (MENDUKUNG PRODUCTION SSL VERCEL) ---
         function checkIsolatedUrl() {
             const params = new URLSearchParams(window.location.search);
             const viewCam = params.get('viewCam');
@@ -198,6 +197,9 @@
 
                 const viewerId = APP_PREFIX + "VIEW_" + generateShortId();
                 peer = new Peer(viewerId, {
+                    host: '0.peerjs.com',
+                    port: 443,
+                    secure: true,
                     debug: 1,
                     config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] }
                 });
@@ -226,7 +228,7 @@
             return false;
         }
 
-        // --- SISTEM PEMILIHAN ROLE AWAL ---
+        // --- SISTEM PEMILIHAN ROLE ---
         document.getElementById('btn-choose-host').addEventListener('click', () => initRole('host'));
         document.getElementById('btn-choose-client').addEventListener('click', () => initRole('client'));
 
@@ -247,7 +249,12 @@
 
         function startPeerSession(roomIdKey) {
             const fullId = APP_PREFIX + roomIdKey;
+            
+            // Menggunakan Cloud Broker Server via WSS (Secure WebSocket) agar aman di Vercel HTTPS
             peer = new Peer(fullId, {
+                host: '0.peerjs.com',
+                port: 443,
+                secure: true,
                 debug: 1,
                 config: {
                     'iceServers': [
@@ -267,13 +274,14 @@
                 peer.on('open', () => {
                     sendStreamToHost();
                 });
-                peer.on('error', () => {
+                peer.on('error', (err) => {
+                    console.error("Peer error:", err);
                     triggerAutoReconnect();
                 });
             }
         }
 
-        // --- SERVER ENGINE: SISI HOST MONITOR ---
+        // --- ENGINE SISI HOST MONITOR ---
         let hostFeeds = {};
 
         function runHostEngine() {
@@ -331,14 +339,11 @@
 
             const vElement = document.getElementById(`vid-${clientPeerId}`);
             vElement.srcObject = stream;
-            
-            // Amankan video mobile dari auto-pause pasca fullscreen bawaan OS
             vElement.addEventListener('webkitendfullscreen', () => forcePlayVideo(vElement));
 
             hostFeeds[clientPeerId] = { stream, call, interval: null };
             document.getElementById('host-cam-count').innerText = Object.keys(hostFeeds).length;
 
-            // INDIKATOR SINYAL SETIAP DEVICE (WEBRTC STATS)
             if (call.peerConnection) {
                 hostFeeds[clientPeerId].interval = setInterval(async () => {
                     try {
@@ -371,8 +376,7 @@
             if (total === 0) document.getElementById('host-empty-state').classList.remove('hidden');
         }
 
-
-        // --- CLIENT ENGINE: SEKTOR PERANGKAT KAMERA ---
+        // --- ENGINE SISI KAMERA CLIENT ---
         async function setupHardwareSelectors() {
             try {
                 await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -392,7 +396,7 @@
                     }
                 });
             } catch (err) {
-                elPeerDisplay.innerText = "Error: Izin Kamera/Mic Ditolak";
+                elPeerDisplay.innerText = "Error: Izin Perangkat Ditolak";
             }
         }
 
@@ -470,7 +474,7 @@
             }
         }
 
-        // --- AUTOMATIC RECONNECTION SYSTEM WITHOUT RELOAD ---
+        // --- SISTEM AUTOMATIC RECONNECT SEAMLESS ---
         function triggerAutoReconnect() {
             if (currentRole !== 'client' || !targetRoomId) return;
 
@@ -481,7 +485,6 @@
 
             if (reconnectTimeout) clearTimeout(reconnectTimeout);
 
-            // Melakukan retry koneksi setiap 4 detik tanpa me-reload/refresh browser
             reconnectTimeout = setTimeout(() => {
                 if (peer && !peer.destroyed) {
                     sendStreamToHost();
