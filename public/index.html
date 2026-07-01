@@ -70,7 +70,6 @@
                     <h2 class="text-sm md:text-base font-semibold flex items-center gap-2">
                         <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Multi-View Monitor
                     </h2>
-                    <!-- Fitur Baru: Tombol Mic Master Talkback Host -->
                     <button id="btn-host-mic" class="bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700 px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition">
                         <i data-lucide="mic-off" id="host-mic-icon" class="w-3.5 h-3.5 text-red-500"></i> <span id="host-mic-text">Host Mic: Muted</span>
                     </button>
@@ -108,7 +107,6 @@
                     <i data-lucide="signal" id="client-signal-icon" class="w-3 h-3 text-zinc-400"></i>
                     <span id="client-signal-text">0 ms</span>
                 </div>
-                <!-- Audio element tersembunyi untuk mendengarkan suara mic dari Host -->
                 <audio id="client-talkback-audio" autoplay class="hidden"></audio>
             </div>
 
@@ -179,17 +177,11 @@
         let reconnectTimeout = null;
         let signalMonitorInterval = null;
 
-        // Recording States
         let activeRecorders = {}; 
         let isRecording = false;
-
-        // Custom Labels State
         let customLabels = {};
-
-        // Active Viewer Connections (Host tracking untuk sinkronisasi live fullscreen)
         let viewerConnections = {};
 
-        // Host Talkback & Client Call tracking states
         let hostMicStream = null;
         let hostMicMuted = true;
         let clientCallsList = {}; 
@@ -212,7 +204,52 @@
             }
         }
 
-        // --- DEKODER PARAMETER URL (SINKRONISASI AKTIF DI HALAMAN FULLSCREEN) ---
+        // --- OPTIMASI KUALITAS & BITRATE WEBRTC (Mencegah Buram / Pecah) ---
+        function optimizeSDPBitrate(sdp, bitrateKbps = 6000) {
+            let lines = sdp.split('\r\n');
+            let videoIndex = -1;
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].indexOf('m=video') === 0) {
+                    videoIndex = i;
+                    break;
+                }
+            }
+            if (videoIndex !== -1) {
+                // Hapus baris b=AS atau b=TIAS lama jika ada
+                let nextLine = videoIndex + 1;
+                while (lines[nextLine] && (lines[nextLine].indexOf('b=') === 0 || lines[nextLine].indexOf('a=') === 0)) {
+                    if (lines[nextLine].indexOf('b=AS:') === 0 || lines[nextLine].indexOf('b=TIAS:') === 0) {
+                        lines.splice(nextLine, 1);
+                        continue;
+                    }
+                    nextLine++;
+                }
+                // Injeksi target alokasi Bitrate Baru yang tinggi ke SDP
+                lines.splice(videoIndex + 1, 0, `b=AS:${bitrateKbps}`, `b=TIAS:${bitrateKbps * 1000}`);
+            }
+            return lines.join('\r\n');
+        }
+
+        function applyHighQualitySDPHack(call, targetBitrate = 6000) {
+            if (!call.peerConnection) return;
+            const pc = call.peerConnection;
+            
+            // Intersepsi modifikasi SDP sebelum sinkronisasi lokal/remote deskripsi dilakukan
+            const originalCreateOffer = pc.createOffer;
+            pc.createOffer = async function(options) {
+                const offer = await originalCreateOffer.apply(this, [options]);
+                offer.sdp = optimizeSDPBitrate(offer.sdp, targetBitrate);
+                return offer;
+            };
+
+            const originalCreateAnswer = pc.createAnswer;
+            pc.createAnswer = async function(options) {
+                const answer = await originalCreateAnswer.apply(this, [options]);
+                answer.sdp = optimizeSDPBitrate(answer.sdp, targetBitrate);
+                return answer;
+            };
+        }
+
         function checkIsolatedUrl() {
             const params = new URLSearchParams(window.location.search);
             const viewCam = params.get('viewCam');
@@ -250,8 +287,10 @@
                 });
 
                 peer.on('call', (call) => {
+                    applyHighQualitySDPHack(call, 8000);
                     call.answer();
                     call.on('stream', (remoteStream) => {
+                        remoteStream.getVideoTracks().forEach(track => { track.contentHint = 'motion'; });
                         isoVid.srcObject = remoteStream;
                         isoVid.addEventListener('webkitendfullscreen', () => forcePlayVideo(isoVid));
                     });
@@ -297,7 +336,8 @@
                 config: {
                     'iceServers': [
                         { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' }
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' }
                     ],
                     'sdpSemantics': 'unified-plan'
                 }
@@ -327,7 +367,8 @@
                 conn.on('data', (data) => {
                     if (data.type === 'REQUEST_ISOLATED_FEED' && hostFeeds[data.targetCamId]) {
                         viewerConnections[data.viewerPeerId] = conn;
-                        peer.call(data.viewerPeerId, hostFeeds[data.targetCamId].stream);
+                        const vCall = peer.call(data.viewerPeerId, hostFeeds[data.targetCamId].stream);
+                        applyHighQualitySDPHack(vCall, 8000);
                         setTimeout(() => { broadcastFilterState(data.targetCamId); }, 1000);
                     }
                 });
@@ -335,9 +376,9 @@
 
             peer.on('call', (call) => {
                 clientCallsList[call.peer] = call;
+                applyHighQualitySDPHack(call, 6000);
                 call.answer();
 
-                // Jika mikrofon host aktif saat client baru masuk, pasangkan langsung ke jalurnya
                 if (hostMicStream && !hostMicMuted) {
                     const audioTrack = hostMicStream.getAudioTracks()[0];
                     if (audioTrack && call.peerConnection) {
@@ -350,6 +391,8 @@
                 }
 
                 call.on('stream', (remoteStream) => {
+                    // Beri petunjuk ke peramban untuk menjaga kelancaran frame rate video terkirim
+                    remoteStream.getVideoTracks().forEach(track => { track.contentHint = 'motion'; });
                     appendCameraGrid(call.peer, remoteStream, call);
                 });
                 call.on('close', () => {
@@ -358,7 +401,6 @@
             });
         }
 
-        // Setup sistem audio mikrofon dari sisi Host Monitor Utama
         async function setupHostMicTalkback() {
             const btnHostMic = document.getElementById('btn-host-mic');
             const iconHostMic = document.getElementById('host-mic-icon');
@@ -368,7 +410,9 @@
                 if (hostMicMuted) {
                     try {
                         if (!hostMicStream) {
-                            hostMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                            hostMicStream = await navigator.mediaDevices.getUserMedia({ 
+                                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+                            });
                         }
                         hostMicStream.getAudioTracks()[0].enabled = true;
                         hostMicMuted = false;
@@ -377,7 +421,6 @@
                         iconHostMic.setAttribute('data-lucide', 'mic');
                         textHostMic.innerText = "Host Mic: Talk Live";
 
-                        // Inject track mikrofon host ke semua client yang sedang terhubung
                         for (const clientPeerId in clientCallsList) {
                             const call = clientCallsList[clientPeerId];
                             if (call && call.peerConnection) {
@@ -385,11 +428,16 @@
                                 const hasAudio = senders.some(s => s.track && s.track.kind === 'audio');
                                 if (!hasAudio && hostMicStream.getAudioTracks().length > 0) {
                                     call.peerConnection.addTrack(hostMicStream.getAudioTracks()[0], hostMicStream);
+                                    // Pemicu renegotiation internal di sisi client secara pasif
+                                    if(call.peerConnection.signalingState === 'stable') {
+                                        const desc = call.peerConnection.localDescription;
+                                        if (desc) call.peerConnection.setLocalDescription(desc);
+                                    }
                                 }
                             }
                         }
                     } catch (e) {
-                        alert("Gagal mengakses mikrofon host. Pastikan izin mikrofon diberikan.");
+                        alert("Gagal mengakses mikrofon host.");
                     }
                 } else {
                     if (hostMicStream) {
@@ -611,7 +659,7 @@
             document.getElementById('record-count').innerText = checkedBoxes.length;
         }
 
-        // --- HOST RECORD ENGINE (NATIVE MP4 CONTROLLER) ---
+        // --- HOST RECORD ENGINE ---
         function setupHostRecordButton() {
             const recBtn = document.getElementById('btn-host-record');
             recBtn.addEventListener('click', () => {
@@ -695,7 +743,6 @@
                     }
                 });
 
-                // Fitur Baru: Event listener pemicu perubahan parameter live (No Reconnect)
                 camSel.addEventListener('change', updateClientMediaOnTheFly);
                 micSel.addEventListener('change', updateClientMediaOnTheFly);
                 document.getElementById('select-quality').addEventListener('change', updateClientMediaOnTheFly);
@@ -705,7 +752,6 @@
             }
         }
 
-        // Fungsi Inti Baru: Mengganti track media secara dinamis tanpa memutuskan jalur WebRTC
         async function updateClientMediaOnTheFly() {
             if (!localStream || !activeCall || !activeCall.peerConnection) return;
 
@@ -713,24 +759,41 @@
             const micId = document.getElementById('select-mic').value;
             const q = document.getElementById('select-quality').value;
 
+            // Optimalisasi Hardware Constraints: Memaksa kestabilan frame rate dan filter audio profesional
             let constraints = {
-                audio: { deviceId: micId ? { exact: micId } : undefined, echoCancellation: true },
-                video: { deviceId: camId ? { exact: camId } : undefined }
+                audio: { 
+                    deviceId: micId ? { exact: micId } : undefined, 
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: { 
+                    deviceId: camId ? { exact: camId } : undefined,
+                    frameRate: { ideal: 30, max: 60 } // Mengurangi micro-stuttering/putus-putus gerakan
+                }
             };
 
+            let targetBitrate = 4000;
             if (q === '1080p') {
                 constraints.video.width = { ideal: 1920 }; constraints.video.height = { ideal: 1080 };
+                targetBitrate = 8000; // Bitrate tinggi untuk resolusi FHD agar tidak pecah/buram
             } else if (q === '720p') {
                 constraints.video.width = { ideal: 1280 }; constraints.video.height = { ideal: 720 };
+                targetBitrate = 5000;
             } else {
                 constraints.video.width = { ideal: 854 }; constraints.video.height = { ideal: 480 };
+                targetBitrate = 2500;
             }
 
             try {
                 const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+                
+                // Set contentHint secara eksplisit pada track baru
+                newStream.getVideoTracks().forEach(track => { track.contentHint = (q === '1080p') ? 'detail' : 'motion'; });
+
                 const senders = activeCall.peerConnection.getSenders();
 
-                // Ganti Video Track
+                // Ganti Video Track secara dinamis
                 const videoSender = senders.find(s => s.track && s.track.kind === 'video');
                 const newVideoTrack = newStream.getVideoTracks()[0];
                 if (videoSender && newVideoTrack) {
@@ -739,7 +802,7 @@
                     if (oldVideoTrack) oldVideoTrack.stop();
                 }
 
-                // Ganti Audio Track
+                // Ganti Audio Track secara dinamis
                 const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
                 const newAudioTrack = newStream.getAudioTracks()[0];
                 if (audioSender && newAudioTrack) {
@@ -750,7 +813,15 @@
 
                 localStream = newStream;
                 document.getElementById('client-preview').srcObject = localStream;
-                console.log("Parameter hardware/resolusi berhasil diperbarui secara live.");
+                
+                // Terapkan alokasi SDP bitrate terbaru pasca pergantian track
+                applyHighQualitySDPHack(activeCall, targetBitrate);
+                if(activeCall.peerConnection.signalingState === 'stable') {
+                    const desc = activeCall.peerConnection.localDescription;
+                    if (desc) await activeCall.peerConnection.setLocalDescription(desc);
+                }
+
+                console.log("Jalur parameter teroptimasi berhasil dimuat ulang.");
             } catch (err) {
                 console.error("Gagal memperbarui track media secara live:", err);
             }
@@ -781,31 +852,45 @@
             const q = document.getElementById('select-quality').value;
 
             let constraints = {
-                audio: { deviceId: micId ? { exact: micId } : undefined, echoCancellation: true },
-                video: { deviceId: camId ? { exact: camId } : undefined }
+                audio: { 
+                    deviceId: micId ? { exact: micId } : undefined, 
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: { 
+                    deviceId: camId ? { exact: camId } : undefined,
+                    frameRate: { ideal: 30, max: 60 }
+                }
             };
 
+            let targetBitrate = 4000;
             if (q === '1080p') {
                 constraints.video.width = { ideal: 1920 }; constraints.video.height = { ideal: 1080 };
+                targetBitrate = 8000;
             } else if (q === '720p') {
                 constraints.video.width = { ideal: 1280 }; constraints.video.height = { ideal: 720 };
+                targetBitrate = 5000;
             } else {
                 constraints.video.width = { ideal: 854 }; constraints.video.height = { ideal: 480 };
+                targetBitrate = 2500;
             }
 
             try {
                 localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                localStream.getVideoTracks().forEach(track => { track.contentHint = (q === '1080p') ? 'detail' : 'motion'; });
+
                 const previewNode = document.getElementById('client-preview');
                 previewNode.srcObject = localStream;
                 previewNode.addEventListener('webkitendfullscreen', () => forcePlayVideo(previewNode));
 
                 const masterHostId = APP_PREFIX + targetRoomId;
                 
-                // Pada unified-plan, call otomatis mendaftarkan track lokal
+                // Buat panggilan RTC dengan skema modifikasi SDP yang diinjeksi sebelum handshake dimulai
                 const call = peer.call(masterHostId, localStream);
                 activeCall = call;
+                applyHighQualitySDPHack(call, targetBitrate);
 
-                // Listen stream balik jika seandainya host mengirimkan sinyal Talkback Audio
                 call.on('stream', (remoteHostStream) => {
                     const audioTalkback = document.getElementById('client-talkback-audio');
                     if (audioTalkback) {
@@ -840,7 +925,6 @@
             }
         }
 
-        // --- SISTEM AUTOMATIC RECONNECT SEAMLESS ---
         function triggerAutoReconnect() {
             if (currentRole !== 'client' || !targetRoomId) return;
 
