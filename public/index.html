@@ -26,7 +26,6 @@
 </head>
 <body class="bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-50 min-h-screen flex flex-col justify-between font-sans antialiased transition-colors duration-200">
 
-    <!-- Header -->
     <header class="p-4 md:p-5 border-b border-zinc-200 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur sticky top-0 z-50">
         <div class="max-w-7xl mx-auto flex justify-between items-center gap-4">
             <div class="flex items-center gap-2 min-w-0">
@@ -44,10 +43,8 @@
         </div>
     </header>
 
-    <!-- Main Content -->
     <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 flex flex-col items-center justify-center">
         
-        <!-- PANEL AWAL: PILIH MODE PERANGKAT -->
         <div id="panel-setup" class="max-w-md w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 md:p-6 shadow-sm flex flex-col gap-4">
             <div class="text-center">
                 <h2 class="text-sm md:text-base font-semibold">Pilih Peran Perangkat</h2>
@@ -63,7 +60,6 @@
             </div>
         </div>
 
-        <!-- WORKSPACE HOST: MULTIVIEW GRID -->
         <div id="workspace-host" class="w-full hidden flex flex-col gap-4">
             <div class="flex flex-wrap justify-between items-center border-b border-zinc-200 dark:border-zinc-800 pb-3 gap-3">
                 <h2 class="text-sm md:text-base font-semibold flex items-center gap-2">
@@ -80,7 +76,6 @@
             </div>
             
             <div id="multiview-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 min-h-[300px]">
-                <!-- Placeholder jika belum ada client -->
                 <div id="host-empty-state" class="col-span-full text-center py-12 border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">
                     <i data-lucide="video-off" class="w-8 h-8 text-zinc-400 mx-auto mb-2"></i>
                     <p class="text-xs text-zinc-500 dark:text-zinc-400">Belum ada kamera client yang terhubung ke Room ini</p>
@@ -88,9 +83,7 @@
             </div>
         </div>
 
-        <!-- WORKSPACE CLIENT: PENGATURAN KAMERA & TRANSMISI -->
         <div id="workspace-client" class="w-full hidden grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-            <!-- Preview Video -->
             <div class="lg:col-span-2 relative aspect-video bg-black rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-800 shadow-sm group">
                 <video id="client-preview" autoplay playsinline muted class="w-full h-full object-cover"></video>
                 <div class="absolute top-3 left-3">
@@ -104,7 +97,6 @@
                 </div>
             </div>
 
-            <!-- Panel Kontrol Konfigurasi -->
             <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 flex flex-col gap-4 shadow-sm">
                 <div>
                     <h3 class="text-xs font-semibold tracking-wide text-zinc-400 dark:text-zinc-500 uppercase mb-3">Konfigurasi Perangkat</h3>
@@ -145,18 +137,16 @@
 
     </main>
 
-    <!-- LAYER KHUSUS: ISOLATED FULLSCREEN -->
-    <div id="isolated-fullscreen-layer" class="hidden fixed inset-0 bg-black z-[9999] flex items-center justify-center">
-        <video id="isolated-video" autoplay playsinline class="w-full h-full object-contain"></video>
-        <button id="btn-close-isolated" class="absolute top-4 right-4 bg-zinc-900/80 text-white p-2.5 rounded-full border border-zinc-700 hover:bg-zinc-800 transition">
+    <div id="isolated-fullscreen-layer" class="hidden fixed inset-0 bg-black z-[9999] flex items-center justify-center overflow-hidden">
+        <video id="isolated-video" autoplay playsinline class="w-full h-full object-cover origin-center transition-all duration-100"></video>
+        <button id="btn-close-isolated" class="absolute top-4 right-4 bg-zinc-900/80 text-white p-2.5 rounded-full border border-zinc-700 hover:bg-zinc-800 transition z-20">
             <i data-lucide="x" class="w-5 h-5"></i>
         </button>
-        <div class="absolute bottom-4 left-4 bg-black/60 text-white text-[10px] px-3 py-1 rounded font-mono border border-white/10">
+        <div class="absolute bottom-4 left-4 bg-black/60 text-white text-[10px] px-3 py-1 rounded font-mono border border-white/10 z-20">
             🟢 MODE LINK ISOLATED FULLSCREEN
         </div>
     </div>
 
-    <!-- Footer -->
     <footer class="p-4 text-center text-[10px] md:text-[11px] text-zinc-400 dark:text-zinc-600 border-t border-zinc-100 dark:border-zinc-900 shrink-0">
         Camcum Studio &copy; 2026
     </footer>
@@ -178,6 +168,9 @@
         // Custom Labels State
         let customLabels = {};
 
+        // Active Viewer Connections (Host tracking untuk sinkronisasi live fullscreen)
+        let viewerConnections = {};
+
         const elSetup = document.getElementById('panel-setup');
         const elHost = document.getElementById('workspace-host');
         const elClient = document.getElementById('workspace-client');
@@ -196,7 +189,7 @@
             }
         }
 
-        // --- DEKODER PARAMETER URL (MENDUKUNG PRODUCTION SSL VERCEL) ---
+        // --- DEKODER PARAMETER URL (SINKRONISASI AKTIF DI HALAMAN FULLSCREEN) ---
         function checkIsolatedUrl() {
             const params = new URLSearchParams(window.location.search);
             const viewCam = params.get('viewCam');
@@ -216,17 +209,27 @@
                     config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] }
                 });
 
+                const isoVid = document.getElementById('isolated-video');
+
                 peer.on('open', () => {
                     const conn = peer.connect(APP_PREFIX + roomTarget);
                     conn.on('open', () => {
                         conn.send({ type: 'REQUEST_ISOLATED_FEED', targetCamId: viewCam, viewerPeerId: viewerId });
+                    });
+                    
+                    // Listener menerima data setting dinamis dari Host Utama secara live
+                    conn.on('data', (data) => {
+                        if (data.type === 'SYNC_FILTERS' && data.targetCamId === viewCam) {
+                            isoVid.style.transform = `scale(${data.zoom})`;
+                            isoVid.style.filter = `saturate(${data.saturation}%) contrast(${data.contrast}%)`;
+                            isoVid.muted = data.isMuted;
+                        }
                     });
                 });
 
                 peer.on('call', (call) => {
                     call.answer();
                     call.on('stream', (remoteStream) => {
-                        const isoVid = document.getElementById('isolated-video');
                         isoVid.srcObject = remoteStream;
                         isoVid.addEventListener('webkitendfullscreen', () => forcePlayVideo(isoVid));
                     });
@@ -300,7 +303,15 @@
             peer.on('connection', (conn) => {
                 conn.on('data', (data) => {
                     if (data.type === 'REQUEST_ISOLATED_FEED' && hostFeeds[data.targetCamId]) {
+                        // Simpan koneksi viewer untuk broadcast sinkronisasi filter nantinya
+                        viewerConnections[data.viewerPeerId] = conn;
+                        
                         peer.call(data.viewerPeerId, hostFeeds[data.targetCamId].stream);
+                        
+                        // Kirim konfigurasi state filter saat pertama kali terhubung
+                        setTimeout(() => {
+                            broadcastFilterState(data.targetCamId);
+                        }, 1000);
                     }
                 });
             });
@@ -316,13 +327,37 @@
             });
         }
 
+        // Fungsi pembantu mengirim payload setingan ter-update ke seluruh tab fullscreen terhubung
+        function broadcastFilterState(clientPeerId) {
+            if (!hostFeeds[clientPeerId]) return;
+            const feed = hostFeeds[clientPeerId];
+            
+            const zoomVal = document.getElementById(`zoom-${clientPeerId}`).value;
+            const satVal = document.getElementById(`sat-${clientPeerId}`).value;
+            const conVal = document.getElementById(`con-${clientPeerId}`).value;
+
+            const payload = {
+                type: 'SYNC_FILTERS',
+                targetCamId: clientPeerId,
+                zoom: zoomVal,
+                saturation: satVal,
+                contrast: conVal,
+                isMuted: feed.isMuted
+            };
+
+            for (const viewerId in viewerConnections) {
+                if (viewerConnections[viewerId].open) {
+                    viewerConnections[viewerId].send(payload);
+                }
+            }
+        }
+
         function appendCameraGrid(clientPeerId, stream, call) {
             if (hostFeeds[clientPeerId]) return;
 
             document.getElementById('host-empty-state').classList.add('hidden');
             const shortClientLabel = clientPeerId.replace(APP_PREFIX, "");
             
-            // Simpan label default jika belum diset sebelumnya
             if (!customLabels[clientPeerId]) {
                 customLabels[clientPeerId] = `ID: ${shortClientLabel}`;
             }
@@ -335,10 +370,8 @@
 
             card.innerHTML = `
                 <div class="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
-                    <!-- Audio diset muted=true pada elemen video host untuk mencegah gema sirkular ganda -->
                     <video id="vid-${clientPeerId}" autoplay playsinline muted class="w-full h-full object-cover origin-center transition-all duration-100"></video>
                     
-                    <!-- Top Bar UI Grid -->
                     <div class="absolute top-2 left-2 flex items-center gap-1.5 z-10">
                         <input type="checkbox" id="chk-${clientPeerId}" class="cam-record-checkbox w-3.5 h-3.5 rounded bg-zinc-900 accent-blue-500 border-zinc-700 cursor-pointer">
                         <div class="bg-black/60 px-2 py-0.5 rounded text-[9px] text-white font-mono border border-white/10 flex items-center gap-1.5">
@@ -359,10 +392,8 @@
                         </button>
                     </div>
 
-                    <!-- Bottom Bar UI Grid -->
                     <div class="absolute bottom-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition duration-150 z-10">
-                        <!-- Fitur Mute Audio khusus monitoring Host -->
-                        <button id="mute-${clientPeerId}" class="p-1 bg-zinc-900/80 text-white rounded text-[9px] flex items-center gap-1 border border-zinc-700 hover:bg-zinc-800 transition" title="Mute/Unmute Monitoring Host">
+                        <button id="mute-${clientPeerId}" class="p-1 bg-zinc-900/80 text-white rounded text-[9px] flex items-center gap-1 border border-zinc-700 hover:bg-zinc-800 transition" title="Mute/Unmute Monitoring">
                             <i data-lucide="volume-x" class="w-2.5 h-2.5 text-red-400"></i> <span id="mute-txt-${clientPeerId}">Muted</span>
                         </button>
                         <a href="${isolatedUrl}" target="_blank" class="p-1 bg-zinc-900/80 text-white rounded text-[9px] flex items-center gap-1 border border-zinc-700">
@@ -371,7 +402,6 @@
                     </div>
                 </div>
 
-                <!-- Preference Adjuster Panel -->
                 <div class="p-3 bg-zinc-50 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex flex-col gap-2">
                     <div class="grid grid-cols-3 gap-2">
                         <div>
@@ -397,18 +427,17 @@
             vElement.srcObject = stream;
             vElement.addEventListener('webkitendfullscreen', () => forcePlayVideo(vElement));
 
-            // Setup sistem audio lokal terisolasi khusus monitoring (default: dinonaktifkan/muted agar tidak feedback)
+            // Setup audio context terisolasi pada sisi monitor host
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioCtx.createMediaStreamSource(stream);
             const gainNode = audioCtx.createGain();
-            gainNode.gain.value = 0; // Mulai dalam keadaan senyap total pada sisi monitor host
+            gainNode.gain.value = 0; 
             source.connect(gainNode);
             gainNode.connect(audioCtx.destination);
 
             hostFeeds[clientPeerId] = { stream, call, interval: null, audioCtx, gainNode, isMuted: true };
             document.getElementById('host-cam-count').innerText = Object.keys(hostFeeds).length;
 
-            // Integrasi Filter Processing Efek (Zoom, Saturasi, Kontras)
             const updateFilters = () => {
                 const zoomVal = document.getElementById(`zoom-${clientPeerId}`).value;
                 const satVal = document.getElementById(`sat-${clientPeerId}`).value;
@@ -416,34 +445,35 @@
                 
                 vElement.style.transform = `scale(${zoomVal})`;
                 vElement.style.filter = `saturate(${satVal}%) contrast(${conVal}%)`;
+                
+                // Broadcast perubahan ke halaman Fullscreen
+                broadcastFilterState(clientPeerId);
             };
 
             document.getElementById(`zoom-${clientPeerId}`).addEventListener('input', updateFilters);
             document.getElementById(`sat-${clientPeerId}`).addEventListener('input', updateFilters);
             document.getElementById(`con-${clientPeerId}`).addEventListener('input', updateFilters);
 
-            // Integrasi Event Mute/Unmute Monitoring Lokal Host
+            // Integrasi Event Mute/Unmute Dinamis (Berpengaruh ke Fullscreen)
             document.getElementById(`mute-${clientPeerId}`).addEventListener('click', () => {
                 const feed = hostFeeds[clientPeerId];
                 const btn = document.getElementById(`mute-${clientPeerId}`);
-                const txt = document.getElementById(`mute-txt-${clientPeerId}`);
                 
                 if (feed.isMuted) {
-                    // Unmute monitoring host
                     if (feed.audioCtx.state === 'suspended') feed.audioCtx.resume();
                     feed.gainNode.gain.setValueAtTime(1, feed.audioCtx.currentTime);
                     feed.isMuted = false;
                     btn.innerHTML = `<i data-lucide="volume-2" class="w-2.5 h-2.5 text-emerald-400"></i> <span id="mute-txt-${clientPeerId}">Unmuted</span>`;
                 } else {
-                    // Mute monitoring host
                     feed.gainNode.gain.setValueAtTime(0, feed.audioCtx.currentTime);
                     feed.isMuted = true;
                     btn.innerHTML = `<i data-lucide="volume-x" class="w-2.5 h-2.5 text-red-400"></i> <span id="mute-txt-${clientPeerId}">Muted</span>`;
                 }
                 lucide.createIcons();
+                broadcastFilterState(clientPeerId);
             });
 
-            // Integrasi Event Rename Camera
+            // Event Rename Camera
             document.getElementById(`ren-${clientPeerId}`).addEventListener('click', () => {
                 const cleanLabel = customLabels[clientPeerId].replace(`ID: ${shortClientLabel} (`, "").replace(")", "");
                 const currentName = customLabels[clientPeerId].includes("(") ? cleanLabel : shortClientLabel;
@@ -456,7 +486,7 @@
                 }
             });
 
-            // Integrasi Event Delete
+            // Event Delete
             document.getElementById(`del-${clientPeerId}`).addEventListener('click', () => {
                 if(confirm(`Yakin ingin memutuskan koneksi kamera ${shortClientLabel}?`)) {
                     call.close();
@@ -464,7 +494,6 @@
                 }
             });
 
-            // Integrasi Event Checklist Record
             document.getElementById('chk-' + clientPeerId).addEventListener('change', updateRecordCountDisplay);
 
             if (call.peerConnection) {
@@ -555,8 +584,6 @@
 
         function startRecordingFeed(peerId, stream) {
             try {
-                // Menggunakan standard MimeType video/mp4 Container jika didukung (seperti pada Safari / Android Chrome tertentu), 
-                // jika tidak, gunakan H264/AVC inside webm wrapper yang kompatibel langsung direname/dibaca sebagai ekstensi .mp4 asli tanpa lossy transcoding.
                 let options = { mimeType: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2' };
                 if (!MediaRecorder.isTypeSupported(options.mimeType)) {
                     options = { mimeType: 'video/webm;codecs=h264,opus' };
