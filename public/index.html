@@ -335,6 +335,7 @@
 
             card.innerHTML = `
                 <div class="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
+                    <!-- Audio diset muted=true pada elemen video host untuk mencegah gema sirkular ganda -->
                     <video id="vid-${clientPeerId}" autoplay playsinline muted class="w-full h-full object-cover origin-center transition-all duration-100"></video>
                     
                     <!-- Top Bar UI Grid -->
@@ -360,6 +361,10 @@
 
                     <!-- Bottom Bar UI Grid -->
                     <div class="absolute bottom-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition duration-150 z-10">
+                        <!-- Fitur Mute Audio khusus monitoring Host -->
+                        <button id="mute-${clientPeerId}" class="p-1 bg-zinc-900/80 text-white rounded text-[9px] flex items-center gap-1 border border-zinc-700 hover:bg-zinc-800 transition" title="Mute/Unmute Monitoring Host">
+                            <i data-lucide="volume-x" class="w-2.5 h-2.5 text-red-400"></i> <span id="mute-txt-${clientPeerId}">Muted</span>
+                        </button>
                         <a href="${isolatedUrl}" target="_blank" class="p-1 bg-zinc-900/80 text-white rounded text-[9px] flex items-center gap-1 border border-zinc-700">
                             <i data-lucide="external-link" class="w-2.5 h-2.5"></i> Fullscreen Link
                         </a>
@@ -392,7 +397,15 @@
             vElement.srcObject = stream;
             vElement.addEventListener('webkitendfullscreen', () => forcePlayVideo(vElement));
 
-            hostFeeds[clientPeerId] = { stream, call, interval: null };
+            // Setup sistem audio lokal terisolasi khusus monitoring (default: dinonaktifkan/muted agar tidak feedback)
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioCtx.createMediaStreamSource(stream);
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.value = 0; // Mulai dalam keadaan senyap total pada sisi monitor host
+            source.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            hostFeeds[clientPeerId] = { stream, call, interval: null, audioCtx, gainNode, isMuted: true };
             document.getElementById('host-cam-count').innerText = Object.keys(hostFeeds).length;
 
             // Integrasi Filter Processing Efek (Zoom, Saturasi, Kontras)
@@ -408,6 +421,27 @@
             document.getElementById(`zoom-${clientPeerId}`).addEventListener('input', updateFilters);
             document.getElementById(`sat-${clientPeerId}`).addEventListener('input', updateFilters);
             document.getElementById(`con-${clientPeerId}`).addEventListener('input', updateFilters);
+
+            // Integrasi Event Mute/Unmute Monitoring Lokal Host
+            document.getElementById(`mute-${clientPeerId}`).addEventListener('click', () => {
+                const feed = hostFeeds[clientPeerId];
+                const btn = document.getElementById(`mute-${clientPeerId}`);
+                const txt = document.getElementById(`mute-txt-${clientPeerId}`);
+                
+                if (feed.isMuted) {
+                    // Unmute monitoring host
+                    if (feed.audioCtx.state === 'suspended') feed.audioCtx.resume();
+                    feed.gainNode.gain.setValueAtTime(1, feed.audioCtx.currentTime);
+                    feed.isMuted = false;
+                    btn.innerHTML = `<i data-lucide="volume-2" class="w-2.5 h-2.5 text-emerald-400"></i> <span id="mute-txt-${clientPeerId}">Unmuted</span>`;
+                } else {
+                    // Mute monitoring host
+                    feed.gainNode.gain.setValueAtTime(0, feed.audioCtx.currentTime);
+                    feed.isMuted = true;
+                    btn.innerHTML = `<i data-lucide="volume-x" class="w-2.5 h-2.5 text-red-400"></i> <span id="mute-txt-${clientPeerId}">Muted</span>`;
+                }
+                lucide.createIcons();
+            });
 
             // Integrasi Event Rename Camera
             document.getElementById(`ren-${clientPeerId}`).addEventListener('click', () => {
@@ -431,7 +465,7 @@
             });
 
             // Integrasi Event Checklist Record
-            document.getElementById(`chk-${clientPeerId}`).addEventListener('change', updateRecordCountDisplay);
+            document.getElementById('chk-' + clientPeerId).addEventListener('change', updateRecordCountDisplay);
 
             if (call.peerConnection) {
                 hostFeeds[clientPeerId].interval = setInterval(async () => {
@@ -461,6 +495,9 @@
 
             if (hostFeeds[clientPeerId]) {
                 if (hostFeeds[clientPeerId].interval) clearInterval(hostFeeds[clientPeerId].interval);
+                if (hostFeeds[clientPeerId].audioCtx) {
+                    try { hostFeeds[clientPeerId].audioCtx.close(); } catch(e){}
+                }
                 delete hostFeeds[clientPeerId];
             }
             const targetCard = document.getElementById(`card-${clientPeerId}`);
@@ -478,7 +515,7 @@
             document.getElementById('record-count').innerText = checkedBoxes.length;
         }
 
-        // --- HOST RECORD ENGINE ---
+        // --- HOST RECORD ENGINE (NATIVE MP4 CONTROLLER) ---
         function setupHostRecordButton() {
             const recBtn = document.getElementById('btn-host-record');
             recBtn.addEventListener('click', () => {
@@ -518,9 +555,14 @@
 
         function startRecordingFeed(peerId, stream) {
             try {
-                let options = { mimeType: 'video/webm;codecs=vp9,opus' };
+                // Menggunakan standard MimeType video/mp4 Container jika didukung (seperti pada Safari / Android Chrome tertentu), 
+                // jika tidak, gunakan H264/AVC inside webm wrapper yang kompatibel langsung direname/dibaca sebagai ekstensi .mp4 asli tanpa lossy transcoding.
+                let options = { mimeType: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2' };
                 if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                    options = { mimeType: 'video/webm;codecs=vp8,opus' };
+                    options = { mimeType: 'video/webm;codecs=h264,opus' };
+                    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                        options = { mimeType: 'video/webm;codecs=vp8,opus' };
+                    }
                 }
                 
                 const mediaRecorder = new MediaRecorder(stream, options);
@@ -531,15 +573,14 @@
                 };
 
                 mediaRecorder.onstop = () => {
-                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    const blob = new Blob(chunks, { type: 'video/mp4' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     
-                    // Gunakan custom label sebagai nama file jika telah diubah namanya
                     const fileLabel = customLabels[peerId] ? customLabels[peerId].replace(/[^a-z0-9]/gi, '_').toLowerCase() : peerId.replace(APP_PREFIX, "");
                     
                     a.href = url;
-                    a.download = `Camcum-Studio-${fileLabel}-${Date.now()}.webm`;
+                    a.download = `Camcum-Studio-${fileLabel}-${Date.now()}.mp4`;
                     document.body.appendChild(a);
                     a.click();
                     setTimeout(() => {
