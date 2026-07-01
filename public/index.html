@@ -65,13 +65,18 @@
 
         <!-- WORKSPACE HOST: MULTIVIEW GRID -->
         <div id="workspace-host" class="w-full hidden flex flex-col gap-4">
-            <div class="flex justify-between items-center border-b border-zinc-200 dark:border-zinc-800 pb-3">
+            <div class="flex flex-wrap justify-between items-center border-b border-zinc-200 dark:border-zinc-800 pb-3 gap-3">
                 <h2 class="text-sm md:text-base font-semibold flex items-center gap-2">
                     <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Multi-View Monitor
                 </h2>
-                <span class="text-xs bg-zinc-100 dark:bg-zinc-800 px-2.5 py-1 rounded border border-zinc-200 dark:border-zinc-700">
-                    Kamera Aktif: <span id="host-cam-count" class="font-bold text-blue-500">0</span>
-                </span>
+                <div class="flex items-center gap-2">
+                    <button id="btn-host-record" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition">
+                        <i data-lucide="circle" class="w-3.5 h-3.5 fill-current"></i> Record Selected (<span id="record-count">0</span>)
+                    </button>
+                    <span class="text-xs bg-zinc-100 dark:bg-zinc-800 px-2.5 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700">
+                        Kamera Aktif: <span id="host-cam-count" class="font-bold text-blue-500">0</span>
+                    </span>
+                </div>
             </div>
             
             <div id="multiview-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 min-h-[300px]">
@@ -166,6 +171,13 @@
         let reconnectTimeout = null;
         let signalMonitorInterval = null;
 
+        // Recording States
+        let activeRecorders = {}; 
+        let isRecording = false;
+
+        // Custom Labels State
+        let customLabels = {};
+
         const elSetup = document.getElementById('panel-setup');
         const elHost = document.getElementById('workspace-host');
         const elClient = document.getElementById('workspace-client');
@@ -240,6 +252,7 @@
                 elHost.classList.remove('hidden');
                 targetRoomId = generateShortId();
                 startPeerSession(targetRoomId);
+                setupHostRecordButton();
             } else {
                 elClient.classList.remove('hidden');
                 setupHardwareSelectors();
@@ -250,7 +263,6 @@
         function startPeerSession(roomIdKey) {
             const fullId = APP_PREFIX + roomIdKey;
             
-            // Menggunakan Cloud Broker Server via WSS (Secure WebSocket) agar aman di Vercel HTTPS
             peer = new Peer(fullId, {
                 host: '0.peerjs.com',
                 port: 443,
@@ -309,6 +321,11 @@
 
             document.getElementById('host-empty-state').classList.add('hidden');
             const shortClientLabel = clientPeerId.replace(APP_PREFIX, "");
+            
+            // Simpan label default jika belum diset sebelumnya
+            if (!customLabels[clientPeerId]) {
+                customLabels[clientPeerId] = `ID: ${shortClientLabel}`;
+            }
 
             const card = document.createElement('div');
             card.id = `card-${clientPeerId}`;
@@ -317,19 +334,53 @@
             const isolatedUrl = `${window.location.origin}${window.location.pathname}?viewCam=${clientPeerId}&room=${targetRoomId}`;
 
             card.innerHTML = `
-                <div class="relative aspect-video bg-black flex items-center justify-center">
-                    <video id="vid-${clientPeerId}" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                    <div class="absolute top-2 left-2 bg-black/60 px-2 py-0.5 rounded text-[9px] text-white font-mono border border-white/10">
-                        ID: ${shortClientLabel}
+                <div class="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
+                    <video id="vid-${clientPeerId}" autoplay playsinline muted class="w-full h-full object-cover origin-center transition-all duration-100"></video>
+                    
+                    <!-- Top Bar UI Grid -->
+                    <div class="absolute top-2 left-2 flex items-center gap-1.5 z-10">
+                        <input type="checkbox" id="chk-${clientPeerId}" class="cam-record-checkbox w-3.5 h-3.5 rounded bg-zinc-900 accent-blue-500 border-zinc-700 cursor-pointer">
+                        <div class="bg-black/60 px-2 py-0.5 rounded text-[9px] text-white font-mono border border-white/10 flex items-center gap-1.5">
+                            <span id="lbl-${clientPeerId}">${customLabels[clientPeerId]}</span>
+                            <button id="ren-${clientPeerId}" class="text-zinc-400 hover:text-white transition focus:outline-none" title="Ubah Nama Kamera">
+                                <i data-lucide="edit-3" class="w-2.5 h-2.5"></i>
+                            </button>
+                        </div>
                     </div>
-                    <div class="absolute top-2 right-2 flex items-center gap-1 bg-black/60 px-1.5 py-0.5 rounded text-[9px] text-zinc-400 font-mono border border-white/10">
-                        <i data-lucide="signal" id="sig-ico-${clientPeerId}" class="w-2.5 h-2.5 text-emerald-400"></i>
-                        <span id="sig-txt-${clientPeerId}">0 ms</span>
+                    
+                    <div class="absolute top-2 right-2 flex items-center gap-2 z-10">
+                        <div class="flex items-center gap-1 bg-black/60 px-1.5 py-0.5 rounded text-[9px] text-zinc-400 font-mono border border-white/10">
+                            <i data-lucide="signal" id="sig-ico-${clientPeerId}" class="w-2.5 h-2.5 text-emerald-400"></i>
+                            <span id="sig-txt-${clientPeerId}">0 ms</span>
+                        </div>
+                        <button id="del-${clientPeerId}" class="p-1 bg-red-600/90 text-white rounded hover:bg-red-700 border border-red-500 transition shadow-sm" title="Hapus Kamera">
+                            <i data-lucide="trash-2" class="w-3 h-3"></i>
+                        </button>
                     </div>
-                    <div class="absolute bottom-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition duration-150">
+
+                    <!-- Bottom Bar UI Grid -->
+                    <div class="absolute bottom-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition duration-150 z-10">
                         <a href="${isolatedUrl}" target="_blank" class="p-1 bg-zinc-900/80 text-white rounded text-[9px] flex items-center gap-1 border border-zinc-700">
                             <i data-lucide="external-link" class="w-2.5 h-2.5"></i> Fullscreen Link
                         </a>
+                    </div>
+                </div>
+
+                <!-- Preference Adjuster Panel -->
+                <div class="p-3 bg-zinc-50 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex flex-col gap-2">
+                    <div class="grid grid-cols-3 gap-2">
+                        <div>
+                            <label class="text-[9px] text-zinc-400 block font-medium mb-0.5">Zoom</label>
+                            <input type="range" id="zoom-${clientPeerId}" min="1" max="3" step="0.1" value="1" class="w-full h-1 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                        </div>
+                        <div>
+                            <label class="text-[9px] text-zinc-400 block font-medium mb-0.5">Saturasi</label>
+                            <input type="range" id="sat-${clientPeerId}" min="0" max="200" step="5" value="100" class="w-full h-1 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                        </div>
+                        <div>
+                            <label class="text-[9px] text-zinc-400 block font-medium mb-0.5">Kontras</label>
+                            <input type="range" id="con-${clientPeerId}" min="50" max="150" step="5" value="100" class="w-full h-1 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                        </div>
                     </div>
                 </div>
             `;
@@ -344,6 +395,44 @@
             hostFeeds[clientPeerId] = { stream, call, interval: null };
             document.getElementById('host-cam-count').innerText = Object.keys(hostFeeds).length;
 
+            // Integrasi Filter Processing Efek (Zoom, Saturasi, Kontras)
+            const updateFilters = () => {
+                const zoomVal = document.getElementById(`zoom-${clientPeerId}`).value;
+                const satVal = document.getElementById(`sat-${clientPeerId}`).value;
+                const conVal = document.getElementById(`con-${clientPeerId}`).value;
+                
+                vElement.style.transform = `scale(${zoomVal})`;
+                vElement.style.filter = `saturate(${satVal}%) contrast(${conVal}%)`;
+            };
+
+            document.getElementById(`zoom-${clientPeerId}`).addEventListener('input', updateFilters);
+            document.getElementById(`sat-${clientPeerId}`).addEventListener('input', updateFilters);
+            document.getElementById(`con-${clientPeerId}`).addEventListener('input', updateFilters);
+
+            // Integrasi Event Rename Camera
+            document.getElementById(`ren-${clientPeerId}`).addEventListener('click', () => {
+                const cleanLabel = customLabels[clientPeerId].replace(`ID: ${shortClientLabel} (`, "").replace(")", "");
+                const currentName = customLabels[clientPeerId].includes("(") ? cleanLabel : shortClientLabel;
+                const newName = prompt(`Masukkan nama baru untuk kamera ${shortClientLabel}:`, currentName);
+                
+                if (newName !== null && newName.trim() !== "") {
+                    const finalLabel = `${newName.trim()} (${shortClientLabel})`;
+                    customLabels[clientPeerId] = finalLabel;
+                    document.getElementById(`lbl-${clientPeerId}`).innerText = finalLabel;
+                }
+            });
+
+            // Integrasi Event Delete
+            document.getElementById(`del-${clientPeerId}`).addEventListener('click', () => {
+                if(confirm(`Yakin ingin memutuskan koneksi kamera ${shortClientLabel}?`)) {
+                    call.close();
+                    removeCameraGrid(clientPeerId);
+                }
+            });
+
+            // Integrasi Event Checklist Record
+            document.getElementById(`chk-${clientPeerId}`).addEventListener('change', updateRecordCountDisplay);
+
             if (call.peerConnection) {
                 hostFeeds[clientPeerId].interval = setInterval(async () => {
                     try {
@@ -351,7 +440,8 @@
                         stats.forEach(report => {
                             if (report.type === 'candidate-pair' && report.currentRoundTripTime) {
                                 const rtt = Math.round(report.currentRoundTripTime * 1000);
-                                document.getElementById(`sig-txt-${clientPeerId}`).innerText = `${rtt} ms`;
+                                const txtNode = document.getElementById(`sig-txt-${clientPeerId}`);
+                                if(txtNode) txtNode.innerText = `${rtt} ms`;
                                 const ico = document.getElementById(`sig-ico-${clientPeerId}`);
                                 if (ico) {
                                     ico.className = rtt > 120 ? "w-2.5 h-2.5 text-red-500" : rtt > 60 ? "w-2.5 h-2.5 text-amber-500" : "w-2.5 h-2.5 text-emerald-400";
@@ -364,6 +454,11 @@
         }
 
         function removeCameraGrid(clientPeerId) {
+            if (activeRecorders[clientPeerId]) {
+                try { activeRecorders[clientPeerId].stop(); } catch(e){}
+                delete activeRecorders[clientPeerId];
+            }
+
             if (hostFeeds[clientPeerId]) {
                 if (hostFeeds[clientPeerId].interval) clearInterval(hostFeeds[clientPeerId].interval);
                 delete hostFeeds[clientPeerId];
@@ -374,6 +469,90 @@
             const total = Object.keys(hostFeeds).length;
             document.getElementById('host-cam-count').innerText = total;
             if (total === 0) document.getElementById('host-empty-state').classList.remove('hidden');
+            
+            updateRecordCountDisplay();
+        }
+
+        function updateRecordCountDisplay() {
+            const checkedBoxes = document.querySelectorAll('.cam-record-checkbox:checked');
+            document.getElementById('record-count').innerText = checkedBoxes.length;
+        }
+
+        // --- HOST RECORD ENGINE ---
+        function setupHostRecordButton() {
+            const recBtn = document.getElementById('btn-host-record');
+            recBtn.addEventListener('click', () => {
+                if (!isRecording) {
+                    const checkedBoxes = document.querySelectorAll('.cam-record-checkbox:checked');
+                    if (checkedBoxes.length === 0) {
+                        alert("Pilih minimal satu kamera menggunakan checklist untuk mulai merekam!");
+                        return;
+                    }
+
+                    checkedBoxes.forEach(cb => {
+                        const peerId = cb.id.replace('chk-', '');
+                        if (hostFeeds[peerId] && hostFeeds[peerId].stream) {
+                            startRecordingFeed(peerId, hostFeeds[peerId].stream);
+                        }
+                    });
+
+                    if (Object.keys(activeRecorders).length > 0) {
+                        isRecording = true;
+                        recBtn.innerHTML = `<i data-lucide="square" class="w-3.5 h-3.5 fill-current animate-pulse"></i> Stop Recording`;
+                        recBtn.className = "bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition";
+                        lucide.createIcons();
+                    }
+                } else {
+                    for (const peerId in activeRecorders) {
+                        try { activeRecorders[peerId].stop(); } catch(e){}
+                    }
+                    activeRecorders = {};
+                    isRecording = false;
+                    recBtn.innerHTML = `<i data-lucide="circle" class="w-3.5 h-3.5 fill-current"></i> Record Selected (<span id="record-count">0</span>)`;
+                    recBtn.className = "bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition";
+                    lucide.createIcons();
+                    updateRecordCountDisplay();
+                }
+            });
+        }
+
+        function startRecordingFeed(peerId, stream) {
+            try {
+                let options = { mimeType: 'video/webm;codecs=vp9,opus' };
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options = { mimeType: 'video/webm;codecs=vp8,opus' };
+                }
+                
+                const mediaRecorder = new MediaRecorder(stream, options);
+                let chunks = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) chunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    
+                    // Gunakan custom label sebagai nama file jika telah diubah namanya
+                    const fileLabel = customLabels[peerId] ? customLabels[peerId].replace(/[^a-z0-9]/gi, '_').toLowerCase() : peerId.replace(APP_PREFIX, "");
+                    
+                    a.href = url;
+                    a.download = `Camcum-Studio-${fileLabel}-${Date.now()}.webm`;
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                    }, 100);
+                };
+
+                mediaRecorder.start();
+                activeRecorders[peerId] = mediaRecorder;
+            } catch (err) {
+                console.error(`Gagal merekam feed ${peerId}:`, err);
+            }
         }
 
         // --- ENGINE SISI KAMERA CLIENT ---
